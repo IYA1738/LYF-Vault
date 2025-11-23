@@ -1,5 +1,5 @@
 //SPDX-License-Identifier:MIT
-pragma solidity 0.8.22;
+pragma solidity 0.8.30;
 
 import "contracts/persistent/fee-accounting/IFeeAccounting.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
@@ -27,13 +27,14 @@ contract FeeAccounting is IFeeAccounting, Ownable2Step{
     mapping(address => VaultFeeInfo) public vaultFeeInfos;  
 
     event SetFeeRate(address target, uint256 feeRate);
+    event RegistryVaultInfo(address vault, uint48 lastTimePaidManageFee, uint16 depositFeeRate, uint16 withdrawFeeRate, uint16 manageFeeRate);
 
     error InvalidStrategy();
     error InvalidFeeRate();
     error ZeroAddress();
     error InvalidChargeType();
 
-    constructor(address initOwner) Ownable2Step(initOwner){
+    constructor(address initOwner) Ownable(initOwner){
 
     }
 

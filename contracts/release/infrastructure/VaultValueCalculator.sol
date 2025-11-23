@@ -2,6 +2,7 @@
 pragma solidity 0.8.30;
 
 import "contracts/release/Core/Vault/IVault.sol";
+import "contracts/release/Core/Comptroller/IComptroller.sol";
 import "contracts/release/infrastructure/price-feeds/IChainlinkPriceFeedsRouter.sol";
 import "contracts/release/infrastructure/utils/IMinimumERC20.sol";
 import "contracts/release/Strategies/IStrategyBase.sol";
@@ -12,7 +13,13 @@ contract VaultValueCalculator{
     //最终的NAV是策略给的NAV减去Protocol Fee后的
     //策略NAV只是策略自己的NAV
 
-    address private _priceRouter;
+    address public comptroller;
+    address public priceRouter;
+
+    constructor(address _comptroller, address _priceRouter){
+        comptroller = _comptroller;
+        priceRouter = _priceRouter;
+    }
     
     function getTotalValueInVault(address _vaultProxy, address baseToken) public view returns(uint256){
         address[] memory assets = IVault(_vaultProxy).getAssetsBalance();
@@ -23,7 +30,7 @@ contract VaultValueCalculator{
             address asset = assets[i];
             uint256 balance = IMinimumERC20(asset).balanceOf(_vaultProxy);
             uint8 decimals = IMinimumERC20(asset).decimals();
-            uint256 convertRate = IChainlinkPriceFeedsRouter(_priceRouter).getPrice1e18(asset, baseToken);
+            uint256 convertRate = IChainlinkPriceFeedsRouter(priceRouter).getPrice1e18(asset, baseToken);
             totalValue += Math.mulDiv(balance, convertRate, Math.pow10(decimals), Math.Rounding.Floor);
             unchecked {
                 i++;
@@ -33,7 +40,7 @@ contract VaultValueCalculator{
     }
 
     function getStrategiesNAV(address _vaultProxy, address baseToken) public view returns(uint256){
-        address[] memory strategies = IVault(_vaultProxy).getAllRunningStrategies();
+        address[] memory strategies = IComptroller(comptroller).getAllRunningStrategies(_vaultProxy);
         uint256 strategiesCount = strategies.length;
         uint256 strategiesNAV = 0;
         for(uint i = 0; i< strategiesCount;){

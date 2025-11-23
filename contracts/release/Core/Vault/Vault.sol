@@ -3,7 +3,6 @@ pragma solidity 0.8.30;
 
 import "contracts/release/Core/Vault/IVault.sol";
 import "contracts/persistent/vaultLib/VaultBase.sol";
-import "contracts/release/infrastructure/VaultValueCalculator.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
@@ -16,8 +15,11 @@ import "@openzeppelin/contracts-upgradeable/utils/cryptography/EIP712Upgradeable
 import "@openzeppelin/contracts-upgradeable/utils/NoncesUpgradeable.sol";
 import "contracts/persistent/redeem-queue/IRedeemQueue.sol";
 import "contracts/release/infrastructure/protocol-fee/fee-handler/IFeeHandler.sol";
+import "contracts/external-interfaces/IWETH.sol";
+import "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 contract Vault is IVault, VaultBase, ReentrancyGuardUpgradeable, PausableUpgradeable{
+    using SafeCast for uint256;
     using SafeERC20 for IERC20;
 
     event Deposited(address indexed caller,address token ,uint256 amount, uint256 mintShare);
@@ -142,13 +144,12 @@ contract Vault is IVault, VaultBase, ReentrancyGuardUpgradeable, PausableUpgrade
         if(withdrawAmount > assetsBalance[token]){
             IRedeemQueue.RedeemRequest memory redeemRequest = IRedeemQueue.RedeemRequest({
                 user:msg.sender,
-                sharesAmount:shareAmount,
+                sharesAmount:shareAmount.toUint96(),
                 token:token,
-                assetsValueWhenRedeemed:assetAmount
-            })
+                assetsValueWhenRedeemed:assetAmount.toUint96()
+            });
             IRedeemQueue(redeemQueue).requestRedeemQueue(redeemRequest);
             emit WithdrawRedeemQueue(msg.sender, token, withdrawAmount);
-            }
         }else{
             _burn(msg.sender, shareAmount);
 
@@ -212,7 +213,7 @@ contract Vault is IVault, VaultBase, ReentrancyGuardUpgradeable, PausableUpgrade
         if(totalSupply() == 0){
             return 0;
         }
-        uint256 vaultNAV = getVaultNAV(address(this), layout().vaultBaseToken);
+        uint256 vaultNAV = getVaultNAV();
         //make sure shareRate_ is 1e18, if we don't time OFFSET
         //shareRate_ = nav * 1e18 / totalSupply * 1e18 = nav / totalSupply
         //for now, it will be that nav * 1e18 * 1e18 / totalSupply * 1e18 = nav / totalSupply * 1e18 = nav * 1e18 / totalSupply
@@ -238,13 +239,18 @@ contract Vault is IVault, VaultBase, ReentrancyGuardUpgradeable, PausableUpgrade
         return assetsBalance;
     }
 
+    //需要补足逻辑
+    function getVaultNAV() public view returns(uint256){
+        return 0;
+    }
+
     //pause
     function paused() external onlyOwner{
-        _paused();
+        _pause();
     }
 
     function unpaused() external onlyOwner{
-        _unpaused();
+        _unpause();
     }
 
 }

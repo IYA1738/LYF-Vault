@@ -1,13 +1,3 @@
-# Sample Hardhat Project
+# 一个Enzyme架构的多资产记账Vault与策略聚合器。开发中
 
-This project demonstrates a basic Hardhat use case. It comes with a sample contract, a test for that contract, and a Hardhat Ignition module that deploys that contract.
-
-Try running some of the following tasks:
-
-```shell
-npx hardhat help
-npx hardhat test
-REPORT_GAS=true npx hardhat test
-npx hardhat node
-npx hardhat ignition deploy ./ignition/modules/Lock.js
-```
+# A Enzyme style multi-assets-accounting vault and strategy aggregator. On Going.

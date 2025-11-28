@@ -17,240 +17,281 @@ import "contracts/persistent/redeem-queue/IRedeemQueue.sol";
 import "contracts/release/infrastructure/protocol-fee/fee-handler/IFeeHandler.sol";
 import "contracts/external-interfaces/IWETH.sol";
 import "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import "contracts/utils/AddressArrayLib.sol";
 
 contract Vault is IVault, VaultBase, ReentrancyGuardUpgradeable, PausableUpgradeable{
+    using AddressArrayLib for address[];
     using SafeCast for uint256;
     using SafeERC20 for IERC20;
 
     event Deposited(address indexed caller,address token ,uint256 amount, uint256 mintShare);
     event Withdrawed(address indexed caller,address token ,uint256 amount);
-    event AddSupportedToken(address token);
     event WithdrawRedeemQueue(address indexed caller,address token ,uint256 amount);
-    event PullFundFromStrategy(address indexed strategy, address token, uint256 amount);
-    event PushFundToStrategy(address token, uint256 amount);
+
+    event AddTrackedAsset(address asset);
+    event ActivedExternalPosition(address externalPosition);
+    event RemovedTrackedAsset(address asset);
+    event RemovedExternalPosition(address externalPosition);
+
+    event ReceivedETH(address indexed sender, uint256 amount);
+    event WithdrawnAssetTo(address indexed recipient, address asset, uint256 amount);
 
     error NotSupportedToken(address token);
     error ExceededVaultCap();
     error BadParams();
     error InsufficientBalance();
+    error TrackedAssetAlreadyExists(address asset);
+    error TrackedAssetDoesNotExist(address asset);
 
     //address public comptroller;
 
-    address public redeemQueue;
-    address public vaultBaseToken;
-    address public priceFeed;
-    address public WETH;
+    address private immutable EXTERNAL_POSITION_MANAGER;
 
-    uint256 public constant OFFSET = 10 ** 18;
-    uint256 public constant BPS = 10_000;
-    uint256 public constant MAX_VAULT_CAP = 1_000_000_000_000;
+    uint256 private immutable POSITIONS_LIMIT;
+    address private immutable PROTOCOL_FEE_RESERVE;
+    address private immutable PROTOCOL_FEE_TRACKER;
+    address private immutable WETH_TOKEN;
 
-    uint256 public currentTotalValue; //In Vault, calculated by baseline token
-
-    mapping(address => bool) public supportedTokens;
-    mapping(address => uint256) public assetsBalance;
-
-    function initialize(
-        address admin,
-        address accessor,
-        address _redeemQueue,
-        address _feeHandler,
-        address _vaultBaseToken,
-        string memory shareName,
-        string memory shareSymbol,
-        bytes calldata extraInitData
-    ) external onlyInitializing{
-        __init_VaultBase(msg.sender, admin, accessor, _feeHandler, _vaultBaseToken, shareName, shareSymbol);
-        __Pausable_init();
-        __ReentrancyGuard_init();
-        (address _vaultBaseToken , address _priceFeed , address _WETH)= abi.decode(extraInitData, (address, address, address));
-        priceFeed = _priceFeed;
-        WETH = _WETH;
-        redeemQueue = _redeemQueue;
-    }
-
-    constructor(){
-        _disableInitializers();
-    }
-
-    modifier onlyComptroller(){
-        require(layout().accessor == msg.sender, "Not Comptroller");
-        _;
-    }
-
-    function deposit(address token,uint256 amount) external nonReentrant whenNotPaused{   //支持payable 还需要用wrapped ETH
-        if(!supportedTokens[token]){
-            revert NotSupportedToken(token);
-        }
-        if(amount == 0){
-            revert BadParams();
-        }
-        if(amount + currentTotalValue > MAX_VAULT_CAP){
-            revert ExceededVaultCap();
-        }
-        if(IERC20(token).balanceOf(msg.sender) < amount){
-            revert InsufficientBalance();
-        }
-
-        _deposit(token, amount);
-    }
-
-    function withdraw(address token, uint256 amount) external nonReentrant whenNotPaused{
-        if(!supportedTokens[token]){
-            revert NotSupportedToken(token);
-        }
-        if(amount == 0){
-            revert BadParams();
-        }
-        if(IERC20(address(this)).balanceOf(msg.sender) < amount){
-            revert InsufficientBalance();
-        }
-        _withdraw(token, amount);
-    }
-
-    function depositETH() external payable nonReentrant whenNotPaused{
-        require(msg.value > 0, "Insufficient ETH");
-        if(!supportedTokens[WETH]){
-            revert NotSupportedToken(WETH);
-        }
-        IWETH(WETH).deposit{value: msg.value}();
-        _deposit(WETH, msg.value);
-    }
-
-    // assetAmount is baseToken, amount is the token which user deposit
-    function _deposit(address token, uint256 amount) internal{
-
-        uint256 convertRate = IChainlinkPriceFeedsRouter(priceFeed).getPrice1e18(token, layout().vaultBaseToken);
-        uint256 assetAmount = Math.mulDiv(amount , convertRate, OFFSET, Math.Rounding.Floor); 
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-        uint256 actualAmount = amount - IFeeHandler(layout().feeHandler).feePayingHook(IFeeHandler.ChargeType.UserDeposit, address(this), token, amount);
-        uint256 shouldMint = _convertAssetToShare(actualAmount);
-        if(currentTotalValue + actualAmount > MAX_VAULT_CAP){
-            revert ExceededVaultCap();
-        }
-        currentTotalValue += Math.mulDiv(actualAmount , convertRate, OFFSET, Math.Rounding.Floor);
-        assetsBalance[token] += actualAmount;
-
-        _mint(msg.sender, shouldMint);
-
-        emit Deposited(msg.sender, token, amount, shouldMint);
-    }
-
-    function _withdraw(address token,uint256 shareAmount) internal{
-        uint256 assetAmount = _convertShareToAsset(shareAmount);
-        uint256 convertRate = IChainlinkPriceFeedsRouter(priceFeed).getPrice1e18(token, layout().vaultBaseToken);
-        uint256 withdrawAmount = Math.mulDiv(assetAmount, OFFSET, convertRate, Math.Rounding.Floor);
-        
-        if(withdrawAmount > assetsBalance[token]){
-            IRedeemQueue.RedeemRequest memory redeemRequest = IRedeemQueue.RedeemRequest({
-                user:msg.sender,
-                sharesAmount:shareAmount.toUint96(),
-                token:token,
-                assetsValueWhenRedeemed:assetAmount.toUint96()
-            });
-            IRedeemQueue(redeemQueue).requestRedeemQueue(redeemRequest);
-            emit WithdrawRedeemQueue(msg.sender, token, withdrawAmount);
-        }else{
-            _burn(msg.sender, shareAmount);
-
-            assetsBalance[token] -= withdrawAmount;
-
-            currentTotalValue -= assetAmount;
-
-            uint256 actualWithDraw = withdrawAmount - IFeeHandler(layout().feeHandler).feePayingHook(IFeeHandler.ChargeType.UserRedeem, address(this), token, withdrawAmount);
-
-            IERC20(token).safeTransfer(msg.sender, actualWithDraw);
-
-            emit Withdrawed(msg.sender, token, actualWithDraw);
-        }
-    }
-
-    function previewWithdraw(address token, uint256 shareAmount) public view returns(uint256 fee_){
-        uint256 assetAmount = _convertShareToAsset(shareAmount);
-        uint256 convertRate = IChainlinkPriceFeedsRouter(priceFeed).getPrice1e18(token, layout().vaultBaseToken);
-        uint256 withdrawAmount = Math.mulDiv(assetAmount, OFFSET, convertRate, Math.Rounding.Floor);
-        fee_ = IFeeHandler(layout().feeHandler).previewWithdraw(IFeeHandler.ChargeType.UserRedeem, address(this), withdrawAmount);
-    }
-
-    //nav = 1e18 , totalSupply = 1e18, perShare = 1e18, amount = 1e0
-    //per share = nav / totalSupply
-    //ShareToAsset =  share amount * per share
-    //AssetToShare = Asset amount / per share
     
-    // share amount for per asset = totalSupply / NAV, asset = share * per asset rate
-    function _convertShareToAsset(uint256 share) internal view returns(uint256 asset_){
-        if(totalSupply() == 0){
-            return share;
+
+    function __init_vault(
+        address initOwner, 
+        address _admin, 
+        address _accessor,
+        address _feeHandler, 
+        address _vaultBaseToken,
+        address _protocolFeeReserve,
+        address _protocolFeeTracker,
+        address _externalPositionManager,
+        address _WETH,
+        string memory name, 
+        string memory symbol
+    ) external onlyInitializing{
+        __init_VaultBase(initOwner, _admin, _accessor, _feeHandler, _vaultBaseToken, name, symbol);
+        EXTERNAL_POSITION_MANAGER = _externalPositionManager;
+        PROTOCOL_FEE_RESERVE = _protocolFeeReserve;
+        PROTOCOL_FEE_TRACKER = _protocolFeeTracker;
+        WETH_TOKEN = _WETH;
+    }
+
+    receive() external payable {
+        uint256 ethAmount = payable(address(this)).balance;
+        IWETH(WETH_TOKEN).deposit{value:ethAmount}();
+        emit ReceivedETH(msg.sender, ethAmount);
+    }
+
+    function buyShares(address _target, uint256 _amount) external override onlyAccessor{
+        _mint(_target, _amount);
+    }
+
+    function burnShares(address _target, uint256 _amount) external override onlyAccessor{
+        _burn(_target, _amount);
+    }
+
+    function receiveValidatedVaultAction(VaultAction _action, bytes calldata _actionData)
+        external
+        override
+        onlyAccessor
+    {
+        if (_action == VaultAction.AddExternalPosition) {
+            __executeVaultActionAddExternalPosition(_actionData);
+        } else if (_action == VaultAction.AddTrackedAsset) {
+            __executeVaultActionAddTrackedAsset(_actionData);
+        } else if (_action == VaultAction.ApproveAssetSpender) {
+            __executeVaultActionApproveAssetSpender(_actionData);
+        } else if (_action == VaultAction.BurnShares) {
+            __executeVaultActionBurnShares(_actionData);
+        } else if (_action == VaultAction.CallOnExternalPosition) {
+            __executeVaultActionCallOnExternalPosition(_actionData);
+        } else if (_action == VaultAction.MintShares) {
+            __executeVaultActionMintShares(_actionData);
+        } else if (_action == VaultAction.RemoveExternalPosition) {
+            __executeVaultActionRemoveExternalPosition(_actionData);
+        } else if (_action == VaultAction.RemoveTrackedAsset) {
+            __executeVaultActionRemoveTrackedAsset(_actionData);
+        }  else if (_action == VaultAction.WithdrawAssetTo) {
+            __executeVaultActionWithdrawAssetTo(_actionData);
         }
-        asset_ = Math.mulDiv(share, perShareValue(), OFFSET, Math.Rounding.Floor);
     }
 
-    // asset amount for per share = NAV / totalSupply , share = asset * per share rate
-    function _convertAssetToShare(uint256 asset) internal view returns(uint256 share_){
-        if(totalSupply() == 0){
-            return asset;
+    function __executeVaultActionAddExternalPosition(bytes memory _actionData) private {
+        _addExternalPosition(abi.decode(_actionData, (address)));
+    }
+
+    function __executeVaultActionAddTrackedAsset(bytes memory _actionData) private {
+        _addTrackedAsset(abi.decode(_actionData, (address)));
+    }
+
+    function __executeVaultActionApproveAssetSpender(bytes memory _actionData) private {
+        (address asset, address target, uint256 amount) = abi.decode(_actionData, (address, address, uint256));
+
+        _approveAssetSpender(asset, target, amount);
+    }
+
+    function __executeVaultActionBurnShares(bytes memory _actionData) private {
+        (address target, uint256 amount) = abi.decode(_actionData, (address, uint256));
+
+        _burn(target, amount);
+    }
+
+    function __executeVaultActionCallOnExternalPosition(bytes memory _actionData) private {
+        (
+            address externalPosition,
+            bytes memory callOnExternalPositionActionData,
+            address[] memory assetsToTransfer,
+            uint256[] memory amountsToTransfer,
+            address[] memory assetsToReceive
+        ) = abi.decode(_actionData, (address, bytes, address[], uint256[], address[]));
+
+        __callOnExternalPosition(
+            externalPosition, callOnExternalPositionActionData, assetsToTransfer, amountsToTransfer, assetsToReceive
+        );
+    }
+
+    function __executeVaultActionMintShares(bytes memory _actionData) private {
+        (address target, uint256 amount) = abi.decode(_actionData, (address, uint256));
+
+        _mint(target, amount);
+    }
+
+    function __executeVaultActionRemoveExternalPosition(bytes memory _actionData) private {
+        _removeExternalPosition(abi.decode(_actionData, (address)));
+    }
+
+    function __executeVaultActionRemoveTrackedAsset(bytes memory _actionData) private {
+        _removeTrackedAsset(abi.decode(_actionData, (address)));
+    }
+
+    function __executeVaultActionWithdrawAssetTo(bytes memory _actionData) private {
+        (address asset, address target, uint256 amount) = abi.decode(_actionData, (address, address, uint256));
+        _withdrawAssetTo(asset, target, amount);
+    }
+
+    function _approveAssetSpender(address asset, address target, uint256 amount) private{
+        if(IERC20(asset).allowance(address(this), target) > 0){
+            IERC20(asset).approve(target, 0);
         }
-        share_ = Math.mulDiv(asset, OFFSET, perShareValue(), Math.Rounding.Floor);
+        IERC20(asset).approve(target, amount);
     }
 
-    function pushFundToStrategy(address token, address amount) external nonReentrant whenNotPaused onlyComptroller{
-        //Do check and other operations in comptroller first
-        assetsBalance[token] -= amount;
-        IERC20(token).approve(layout().accessor, 0);
-        IERC20(token).approve(layout().accessor, amount);
-        emit PushFundToStrategy(token, amount);
-    }
-
-    function pullFundFromStrategy(address strategy, address token, address amount) external nonReentrant whenNotPaused onlyComptroller{
-        //Do check and other operations in comptroller first
-        assetsBalance[token] += amount;
-        IERC20(token).safeTransferFrom(strategy, address(this), amount);
-        emit PullFundFromStrategy(strategy, token, amount);
-    }
-
-    //shareRate_ = 1e18
-    function perShareValue() public view returns(uint256 shareRate_){
-        if(totalSupply() == 0){
-            return 0;
+    function _callExternalPosition(
+        address externalPosition,
+        bytes memory actionData,
+        address[] memory assetsToTransfer,
+        uint256[] memory amountsToTransfer,
+        address[] memory assetsToReceive
+    ) private{
+        require(isActiveExternalPosition(externalPosition), "Not a active external position");
+        uint256 assetToTransferCount = assetsToTransfer.length;
+        for(uint i; i < assetToTransferCount;){
+            _withdrawAsssetTo(assetsToTransfer[i], externalPosition, amountsToTransfer[i]);
+            unchecked {
+                i++;
+            }
         }
-        uint256 vaultNAV = getVaultNAV();
-        //make sure shareRate_ is 1e18, if we don't time OFFSET
-        //shareRate_ = nav * 1e18 / totalSupply * 1e18 = nav / totalSupply
-        //for now, it will be that nav * 1e18 * 1e18 / totalSupply * 1e18 = nav / totalSupply * 1e18 = nav * 1e18 / totalSupply
-        //so prevent precision loss and calculating a float number
-        shareRate_ = Math.mulDiv(vaultNAV, OFFSET, totalSupply(), Math.Rounding.Floor);
+        IExternalPosition(externalPosition).receiveCallFromVault(actionData);
+        uint256 assetsToReceiveCount = assetsToReceive.length;
+        for(uint256 i; i < assetsToReceiveCount;){
+            _addTrackedAsset(assetsToReceive[i]);
+        }
     }
 
-    function addSupportedToken(address token) external onlyOwner{
-        require(!supportedTokens[token] && token != address(0), "Bad Token param");
-        supportedTokens[token] = true;
-        emit AddSupportedToken(token);
+    function callOnContract(address _contract, bytes calldata _data) external override onlyAccessor returns(bytes memory){
+        (bool success, bytes memory ret) = _contract.call(_data);
+        require(success, string(ret));
+        return ret
     }
 
-    function getCurrentTotalValue() external view returns(uint256){
-        return currentTotalValue;
+    function addTrackedAsset(address asset) external override onlyAccessor notShare(asset){
+        if(isTrackedAsset(asset)){
+            revert TrackedAssetAlreadyExists(asset);
+        }
+        _validatePositionLimit();
+        _addTrackedAsset(asset);
     }
 
-    function getVaultOwner() external view returns(address){
+    function removeTrackedAsset(address asset) external override onlyAccessor{
+        if(!isTrackedAsset(asset)){
+            revert TrackedAssetDoesNotExist(asset);
+        }
+        _removeTrackedAsset(asset);
+    }
+
+    function withdrawAssetTo(address asset, address to, uint256 amount) external override onlyAccessor{
+        _withdrawAsssetTo(asset, to, amount);
+    }
+
+    function _withdrawAsssetTo(address asset, address to, uint256 amount) private{
+        IERC20(asset).safeTransfer(to, amount);
+        emit WithdrawnAssetTo(to, asset, amount);
+    }
+
+    function _removeTrackedAsset(address asset) private{
+        layout().assetsToIsTracked[asset] = false;
+        layout().trackedAssets.removeStorageItem(asset);
+        emit RemovedTrackedAsset(asset);
+    }
+
+    function _addTrackedAsset(address asset) private{
+        
+        layout().assetsToIsTracked[asset] = true;
+        layout().trackedAssets.push(asset);
+        emit AddTrackedAsset(asset);
+    }
+
+    function _removeExternalPosition(address externalPosition) private{
+        layout().externalPositionToIsActive[externalPosition] = false;
+        layout().activeExternalPositions.removeStorageItem(externalPosition);
+        emit RemovedExternalPosition(externalPosition);
+    }
+
+    function _activeExternalPosition(address externalPosition) private{
+        layout().externalPositionToIsActive[externalPosition] = true;
+        layout().activeExternalPositions.push(externalPosition);
+        emit ActivedExternalPosition(externalPosition);
+    }
+
+    function getActiveExternalPositions() public view override returns(address[] memory){
+        return layout().activeExternalPositions;
+    }
+
+    function getTrackedAssets() public view override returns(address[] memory){
+        return layout().trackedAssets;
+    }
+
+    function isTrackedAsset(address asset) public view override returns(bool){
+        return layout().assetsToIsTracked[asset];
+    }
+
+    function isActiveExternalPosition(address externalPosition) public view override returns(bool){
+        return layout().externalPositionToIsActive[externalPosition];
+    }
+
+    function getWethToken() public view returns(address){
+        return WETH_TOKEN;
+    }
+
+    function getProtocolFeeReserve() public view returns(address){
+        return PROTOCOL_FEE_RESERVE;
+    }
+
+    function getProtocolFeeTracker() public view returns(address){
+        return PROTOCOL_FEE_TRACKER;
+    }
+
+    function getExternalPositionManager() public view returns(address){
+        return EXTERNAL_POSITION_MANAGER;
+    }
+
+    function getPositionsLimit() public view returns(uint256){
+        return POSITIONS_LIMIT;
+    }
+
+    function getOwner() public view override returns(address){
         return owner();
     }
 
-    function getAssetsBalance() external view returns(address[] memory){
-        return assetsBalance;
+    function _validatePositionLimit() private{
+        require(getTrackedAssets().length + getActiveExternalPositions().length < POSITIONS_LIMIT, "ExceededVaultCap");
     }
-
-    //需要补足逻辑
-    function getVaultNAV() public view returns(uint256){
-        return 0;
-    }
-
-    //pause
-    function paused() external onlyOwner{
-        _pause();
-    }
-
-    function unpaused() external onlyOwner{
-        _unpause();
-    }
-
 }

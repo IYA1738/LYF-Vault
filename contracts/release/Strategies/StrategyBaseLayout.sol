@@ -1,6 +1,7 @@
 //SPDX-License-Identifier:MIT
 pragma solidity 0.8.30;
 
+
 abstract contract StrategyBaseLayout{
     bytes32 internal constant STRATEGY_BASE_LAYOUT_SLOT = bytes32(uint256(keccak256("iya.strategy.base.layout")) - 1);
     struct StrategyBaseLayoutSlot{
@@ -26,6 +27,9 @@ abstract contract StrategyBaseLayout{
 
         //Slot 4
         mapping(address => bool) whiteListAdapters;
+
+        //Slot 5
+        mapping(address => uint256) investmentsOfVault;
     }
 
     function layout() internal view returns(StrategyBaseLayoutSlot storage $){

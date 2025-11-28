@@ -6,8 +6,9 @@ import "contracts/release/Strategies/StrategyBaseLayout.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "contracts/release/utils/ComptrollerOwnerMixin.sol";
 
-abstract contract StrategyBase is IStrategyBase,Initializable, StrategyBaseLayout, AccessControlUpgradeable{
+abstract contract StrategyBase is IStrategyBase,ComptrollerOwnerMixin,Initializable, StrategyBaseLayout, AccessControlUpgradeable{
     using SafeCast for uint256;
 
     bytes32 internal immutable COMPTROLLER_ROLE = keccak256("COMPTROLLER_ROLE");
@@ -65,7 +66,7 @@ abstract contract StrategyBase is IStrategyBase,Initializable, StrategyBaseLayou
         
     }
 
-    function setAdapterWhiteList(address adapter, bool isWhiteList) external onlyRole(COMPTROLLER_ROLE){
+    function setAdapterWhiteList(address adapter, bool isWhiteList) external onlyComptrollerOwner{
         if(adapter == address(0)){
             revert InvalidAdapter(adapter);
         }
@@ -74,7 +75,7 @@ abstract contract StrategyBase is IStrategyBase,Initializable, StrategyBaseLayou
         emit SetAdapterWhiteList(adapter, isWhiteList);
     }
 
-    function setStrategyOperator(address newOperator) external onlyRole(COMPTROLLER_ROLE){
+    function setStrategyOperator(address newOperator) external onlyComptrollerOwner{
         StrategyBaseLayoutSlot storage $ = layout();
         _revokeRole(STRATEGY_OPERATOR_ROLE, $.strategyOperator);
         _grantRole(STRATEGY_OPERATOR_ROLE, newOperator);
@@ -83,13 +84,13 @@ abstract contract StrategyBase is IStrategyBase,Initializable, StrategyBaseLayou
         emit SetStrategyOperator(oldStrategyOperator, newOperator);
     }
 
-    function setPerformanceFeeRateBps(uint16 _performanceFeeRateBps) external onlyRole(COMPTROLLER_ROLE){
+    function setPerformanceFeeRateBps(uint16 _performanceFeeRateBps) external onlyComptrollerOwner{
         StrategyBaseLayoutSlot storage $ = layout();
         $.performanceFeeRateBps = _performanceFeeRateBps;
         emit SetPerformanceFeeRateBps(msg.sender, _performanceFeeRateBps);
     }
 
-    function setUsingStrategyFeeRateBps(uint16 _usingStrategyFeeRateBps) external onlyRole(COMPTROLLER_ROLE){
+    function setUsingStrategyFeeRateBps(uint16 _usingStrategyFeeRateBps) external onlyComptrollerOwner{
         StrategyBaseLayoutSlot storage $ = layout();
         $.usingStrategyFeeRateBps = _usingStrategyFeeRateBps;
         emit SetUsingStrategyFeeRateBps(msg.sender, _usingStrategyFeeRateBps);
@@ -113,7 +114,7 @@ abstract contract StrategyBase is IStrategyBase,Initializable, StrategyBaseLayou
         emit SetStopLossBps(msg.sender, _stopLossBps);
     }
 
-    function enableStrategy() external onlyRole(STRATEGY_OPERATOR_ROLE){
+    function enableStrategy() external onlyComptrollerOwner{
         StrategyBaseLayoutSlot storage $ = layout();
         $.isShutdown = !$.isShutdown;
         if($.isShutdown){

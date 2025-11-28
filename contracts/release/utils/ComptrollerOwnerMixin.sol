@@ -6,14 +6,14 @@ import "contracts/release/Core/Comptroller/IComptroller.sol";
 
 abstract contract ComptrollerOwnerMixin is IComptrollerOwnerMixin{
 
-    address public immutable COMPTROLLER;
-
-    constructor(address _comptroller){
-        COMPTROLLER = _comptroller;
-    }
+    address internal constant COMPTROLLER = address(0); //padding 占位
 
     function getComptrollerOwner() public view returns(address owner_){
         return IComptroller(COMPTROLLER).getOwner();
     }
-    
+
+    modifier onlyComptrollerOwner(){
+        require(msg.sender == getComptrollerOwner(), "Only Comptroller Owner");
+        _;
+    }
 }

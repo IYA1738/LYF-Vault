@@ -20,6 +20,8 @@ contract SingleAssetYieldOptimizer is ISingleAssetYieldOptimizer, StrategyBase{
 
     address public extPositionManager;
 
+    address[] public rewardTokens;
+
     //记录仓位信息
 
     error InvalidParams();
@@ -57,9 +59,7 @@ contract SingleAssetYieldOptimizer is ISingleAssetYieldOptimizer, StrategyBase{
                 revert(add(ret, 0x20), mload(ret))
                 }
             }
-            IExternalPositionsManager.ExternalPosition memory extPosition = IExternalPositionsManager.ExternalPosition(
-                address(this), adapter, AdapterInterface(adapter).externalProtocol(), assets[i], amounts[i]);
-            IExternalPositionsManager(extPositionManager).addExternalPosition(extPosition);
+            IExternalPositionsManager(extPositionManager).addExternalPosition(address(this), AdapterInterface(adapter).externalProtocol(), assets[i], amounts[i]);
             unchecked {
                 i++;
             }
@@ -72,7 +72,11 @@ contract SingleAssetYieldOptimizer is ISingleAssetYieldOptimizer, StrategyBase{
 
 
     function harvest() external onlyRole(COMPTROLLER_ROLE){
+    
+    }
 
+    function sellAllRewardToken() external onlyRole(COMPTROLLER_ROLE){
+        
     }
 
     function strategyNAV() public view override returns(uint256){

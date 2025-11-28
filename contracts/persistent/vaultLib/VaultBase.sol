@@ -7,7 +7,7 @@ import "contracts/persistent/vaultLib/utils/Ownable2Step.sol";
 import "contracts/persistent/vaultLib/VaultStorageLayout.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 
-contract VaultBase is VaultStorageLayout,Proxiable, OnlyDelegate, Ownable2Step, ERC20Upgradeable{
+abstract contract VaultBase is VaultStorageLayout,Proxiable, OnlyDelegate, Ownable2Step, ERC20Upgradeable{
 
     event AdminChanged(address indexed oldAdmin, address indexed newAdmin);
     event AccessorChanged(address indexed oldAccessor, address indexed newAccessor);
@@ -26,6 +26,7 @@ contract VaultBase is VaultStorageLayout,Proxiable, OnlyDelegate, Ownable2Step, 
         require(_isContract(newImpl), "New impl is not contract");
     }
 
+    //owner是项目方， admin是当前vault管理， accessor是comptroller
     function __init_VaultBase(
     address initOwner, 
     address _admin, 
@@ -106,6 +107,16 @@ contract VaultBase is VaultStorageLayout,Proxiable, OnlyDelegate, Ownable2Step, 
         assembly("memory-safe"){
             res := gt(extcodesize(addr), 0)
         }
+    }
+
+    modifier onlyAccessor(){
+        require(msg.sender == layout().accessor, "Only Accessor");
+        _;
+    }
+
+    modifier notShare(address asset){
+        require(asset != address(this), "Not Share");
+        _;
     }
 
 }

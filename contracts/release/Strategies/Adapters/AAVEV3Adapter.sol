@@ -5,12 +5,17 @@ import "contracts/external-interfaces/IAAVE-V3.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "contracts/release/Strategies/Adapters/interfaces/SingleAssetInterfaces/AdapterInterface.sol";
+import "contracts/external-interfaces/IAaveRewardController.sol";
 
 contract AAVEV3Adapter is AdapterInterface{
     
     using SafeERC20 for IERC20;
 
     address public immutable aaveV3;
+
+    event Entry();
+    event Exit();
+    event Harvest();
 
     constructor(address _aaveV3){
         aaveV3 = _aaveV3;
@@ -24,8 +29,15 @@ contract AAVEV3Adapter is AdapterInterface{
     }
 
     function exit(bytes calldata data) external override{
-        (address asset, uint256 amount, address to) = abi.decode(data,(address, uint256, address));
+        (address asset, uint256 amount, address to, address reward) = abi.decode(data,(address, uint256, address, address));
         IPool(aaveV3).withdraw(asset, amount, to);
+        IAaveV3RewardsController(aaveV3).claimRewards([asset], amount, to, reward);
+    }
+
+
+
+    function harvest() external {
+        //加上IAaveRewardController
     }
 
     function externalProtocol() external view override returns(address){

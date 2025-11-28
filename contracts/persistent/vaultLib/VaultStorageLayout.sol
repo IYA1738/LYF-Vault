@@ -8,6 +8,12 @@ abstract contract VaultStorageLayout{
         address accessor; //控制策略，开仓，平仓
         address vaultBaseToken; //基准资产
         address feeHandler; //收取手续费的合约
+
+        address[] activeExternalPositions;
+        address[] trackedAssets;
+        mapping(address => bool) assetsToIsTracked;
+        mapping(address => bool) accountToIsAssetManager;
+        mapping(address => bool) externalPositionToIsActive;
     }
 
     function layout() internal view returns(StorageLayout storage $){

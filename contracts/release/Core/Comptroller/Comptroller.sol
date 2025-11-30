@@ -16,6 +16,8 @@ contract Comptroller is IComptroller{
     address private immutable VALUE_INTERPRETER;
     address private immutable WETH_TOKEN;
 
+    address private constant SPECIFIC_ASSET_REDEMPTION_DUMMY_FORFEIT_ADDRESS = 0x000000000000000000000000000000000000aaaa;
+
     address internal denominationAsset;
     address internal vaultProxy;
     bool internal isLib;
@@ -30,7 +32,7 @@ contract Comptroller is IComptroller{
     event AutoProtocolFeeSharesBuybackSet(bool nextAutoProtocolFeeSharesBuyback);
     event BuyBackMaxProtocolFeeSharesFailed(bytes reason, uint256 sharesAmount, uint256 buybackValue, uint256 gav);
     event SharesBought(address buyer, uint256 receivedInvestmentAmount, uint256 sharesIssued, uint256 sharesReceived);
-
+    event PreRedeemSharesFailed(bytes reason, address redeemer, uint256 sharesToRedeem);
     modifier allowsPermissionedVaultAction(){
         _assertPermissionedVaultActionNotAllowed();
         permissionedVaultActionAllowed = true;
@@ -409,6 +411,8 @@ contract Comptroller is IComptroller{
             Math.mulDiv(gav, sharesToRedeem, sharesSupply, Math.Rounding.Floor)
         );
 
+        
+
         __postRedeemSharesForSpecificAssetsHook(
             canonicalSender, _recipient, sharesToRedeem, _payoutAssets, payoutAmounts_, gav
         );
@@ -416,6 +420,38 @@ contract Comptroller is IComptroller{
         emit SharesRedeemed(canonicalSender, _recipient, sharesToRedeem, _payoutAssets, payoutAmounts_);
 
         return payoutAmounts_;
+    }
+
+    function _preRedeemSharesHook(
+        address _redeemer,
+        uint256 _sharesToRedeem,
+        bool _forSpecifiedAssets,
+        uint256 _gavIfCalculated
+    ) private allowsPermissionedVaultAction{
+        try IFeeManager(getFeeManager())
+            .invokeHook(
+                IFeeManager.FeeHook.PreRedeemShares,
+                abi.encode(_redeemer, _sharesToRedeem, _forSpecifiedAssets, _gavIfCalculated),
+                _gavIfCalculated
+            ) {}
+        catch(bytes memory reason){
+            emit PreRedeemSharesFailed(reason, _redeemer, _sharesToRedeem);
+        }
+    }
+
+    function __postRedeemSharesForSpecificAssetsHook(
+        address _redeemer,
+        address _recipient,
+        uint256 _sharesToRedeemPostFees,
+        address[] memory _assets,
+        uint256[] memory _assetAmounts,
+        uint256 _gavPreRedeem
+    ) private{
+        IPolicyManager(getPolicyManager()).validatePolicies(
+            address(this),
+            IPolicyManager.PolicyHook.RedeemSharesForSpecificAssets,
+            abi.encode(_redeemer, _recipient, _sharesToRedeemPostFees, _assets, _assetAmounts, _gavPreRedeem)
+        );
     }
 
     function _payoutSpecifiedAssetPercentages(
@@ -431,10 +467,128 @@ contract Comptroller is IComptroller{
         uint256 payoutAssetsCount = _payoutAssets.length;
         for(uint i; i < payoutAssetsCount;){
             percentagesTotal += _payoutAssetPercentages[i];
+            if (_payoutAssets[i] == SPECIFIC_ASSET_REDEMPTION_DUMMY_FORFEIT_ADDRESS) {
+                continue;
+            }
+            payoutAmounts_[i] = IVaultIntepreter(getVaultInterpreter())
+            .calcCanonicalAssetValue(
+                denominationAssetCopy,
+                Math.mulDiv(_owedGav, _payoutAssetPercentages[i], BPS, Math.Rounding.Floor),
+                _payoutAssets[i]
+            );
+            require(payoutAmounts_[i] > 0, "Zero payout amount");
+            vaultProxyContract.withdrawAssetTo(_payoutAssets[i], _recipient, payoutAmounts_[i]);
             unchecked {
                 i++;
             }
         }
+        require(percentagesTotal == BPS, "Percents must be 100%");
+        return payoutAmounts_;
     }
 
+    function _redeemSharesSetup(
+        IVault vaultProxyContract,
+        address _redeemer,
+        uint256 _shareQuantityInput,
+        bool _forSpecifiedAssets,
+        uint256 _gavIfCalculated
+    ) private returns(uint256 sharesToRedeem_, uint256 sharesSupply_){
+        _assertSharesActionNotTimelocked(address(vaultProxyContract), _redeemer);
+
+        IERC20 sharesContract = IERC20(address(vaultProxyContract));
+
+        uint256 preFeesRedeemerSharesBalance = sharesContract.balanceOf(_redeemer);
+
+        if(_shareQUantityInput == type(uint256).max){
+            sharesToRedeem_ = preFeesRedeemerSharesBalance;
+        }else{
+            sharesToRedeem_ = _shareQuantityInput;
+        }
+        require(sharesToRedeem_ > 0, "Shares to redeem must be > 0");
+
+        //Charge Fees
+        _preRedeemSharesHook(_redeemer, sharesToRedeem_, _gavIfCalculated);
+
+        uint256 postFeesRedeemerSharesBalance = sharesContract.balanceOf(_redeemer);
+
+        if(_sharesQuantityInput == type(uint256).max){
+            sharesToRedeem_ = postFeesRedeemerSharesBalance;
+        } else if(postFeesRedeemerSharesBalance < preFeesRedeemerSharesBalance){
+            sharesToRedeem_ -= (preFeesRedeemerSharesBalance - postFeesRedeemerSharesBalance);
+        }
+
+        vaultProxyContract.payProtocolFee();
+
+        if(_gavIfCalculated > 0 && doesAutoProtocolFeeSharesBuyback()){
+            _buybackMaxProtocolFeeShares(address(vaultProxyContract), _gavIfCalculated);
+        }
+
+        sharesSupply_ = sharesContract.totalSupply();
+
+        vaultProxyContract.burnShares(_redeemer, sharesToRedeem_);
+
+        return (sharesToRedeem_, sharesSupply_);
+    }
+
+    //getter functions
+    function getDispatcher() public view override returns (address dispatcher_) {
+        return DISPATCHER;
+    }
+
+    function getExternalPositionManager() public view override returns (address externalPositionManager_) {
+        return EXTERNAL_POSITION_MANAGER;
+    }
+
+    function getFeeManager() public view override returns (address feeManager_) {
+        return FEE_MANAGER;
+    }
+
+    function getFundDeployer() public view override returns (address fundDeployer_) {
+        return FUND_DEPLOYER;
+    }
+
+    function getIntegrationManager() public view override returns (address integrationManager_) {
+        return INTEGRATION_MANAGER;
+    }
+
+    function getPolicyManager() public view override returns (address policyManager_) {
+        return POLICY_MANAGER;
+    }
+
+    function getProtocolFeeReserve() public view override returns (address protocolFeeReserve_) {
+        return PROTOCOL_FEE_RESERVE;
+    }
+
+    function getValueInterpreter() public view override returns (address valueInterpreter_) {
+        return VALUE_INTERPRETER;
+    }
+
+    function getWethToken() public view override returns (address wethToken_) {
+        return WETH_TOKEN;
+    }
+
+    function doesAutoProtocolFeeSharesBuyback() public view override returns (bool doesAutoBuyback_) {
+        return autoProtocolFeeSharesBuyback;
+    }
+
+    function getDenominationAsset() public view override returns (address denominationAsset_) {
+        return denominationAsset;
+    }
+
+    function getLastSharesBoughtTimestampForAccount(address _who)
+        public
+        view
+        override
+        returns (uint256 lastSharesBoughtTimestamp_)
+    {
+        return acctToLastSharesBoughtTimestamp[_who];
+    }
+
+    function getSharesActionTimelock() public view override returns (uint256 sharesActionTimelock_) {
+        return sharesActionTimelock;
+    }
+
+    function getVaultProxy() public view override returns (address vaultProxy_) {
+        return vaultProxy;
+    }
 }
